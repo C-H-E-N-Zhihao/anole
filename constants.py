@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-ckpt_path = Path("/export/disk-2/115-2/users/xinrui/model/Anole-7b-v0.1")
+ckpt_path = Path("/leonardo_scratch/fast/EUHPC_D31_110/xinrui/models/Anole-7b-v0.1")
 
 MODEL_7B_PATH = ckpt_path / "models" / "7b"
 

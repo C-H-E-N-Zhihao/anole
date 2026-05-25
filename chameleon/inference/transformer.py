@@ -9,11 +9,11 @@ import torch
 from torch import distributed as dist
 from torch import nn
 from torch.nn import functional as F
-from torch.nn import RMSNorm
-from xformers.ops import fmha, rope_padded
+from xformers.ops import RMSNorm, fmha, rope_padded
 from xformers.ops.fmha.attn_bias import (
     BlockDiagonalCausalWithOffsetPaddedKeysMask as AttnBias,
 )
+
 
 @dataclass
 class ModelArgs:
@@ -127,27 +127,17 @@ class Attention(nn.Module):
         xq = xq.view(1, xq.shape[0], self.n_local_heads, self.head_dim)
         xk = xk.view(1, xk.shape[0], self.n_local_kv_heads, self.head_dim)
         xv = xv.view(1, xv.shape[0], self.n_local_kv_heads, self.head_dim)
-
         cache_k, cache_v = cache
 
-        # --- Turing 架构兼容性补丁: 临时提升至 FP32 计算绕过 Triton 硬件锁 ---
-        _dtype = xq.dtype
-        cache_k_f32 = cache_k.to(torch.float32)
-        cache_v_f32 = cache_v.to(torch.float32)
-
         xq = rope_padded(
-            xq=xq.to(torch.float32),
-            xk=xk.to(torch.float32),
-            xv=xv.to(torch.float32),
-            cache_k=cache_k_f32,
-            cache_v=cache_v_f32,
+            xq=xq,
+            xk=xk,
+            xv=xv,
+            cache_k=cache_k,
+            cache_v=cache_v,
             attn_bias=attn_bias,
             theta=self.rope_theta,
-        ).to(_dtype)
-
-        # 把 FP32 算完的结果原地写回 BF16 的 Cache 中
-        cache_k.copy_(cache_k_f32)
-        cache_v.copy_(cache_v_f32)
+        )
 
         # Handle GQA
         # Q shape: [B, M, Hkv, Hq // Hkv, K]
@@ -160,15 +150,9 @@ class Attention(nn.Module):
 
         # rope_padded() updated the caches, so we
         # call attention directly
-        
-        # --- Turing GPU 兼容性补丁: Attention 局部降级为 FP16 ---
         output = fmha.memory_efficient_attention_forward(
-            xq.to(torch.float16), 
-            cache_k.to(torch.float16), 
-            cache_v.to(torch.float16), 
-            attn_bias
-        ).to(xq.dtype)
-        # ----------------------------------------------------
+            xq, cache_k, cache_v, attn_bias
+        )
 
         output = self.wo(output.reshape(output_shape))
         if self.model_parallel_size > 1:
